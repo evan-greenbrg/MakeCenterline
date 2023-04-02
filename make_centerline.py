@@ -1,3 +1,4 @@
+import os
 import timeit
 import math
 import copy
@@ -7,6 +8,7 @@ import pickle
 import pandas
 import scipy
 from scipy import spatial, ndimage
+from scipy import ndimage as nd
 from skimage import measure, draw, morphology, feature, graph
 from skimage.morphology import medial_axis, skeletonize, thin, binary_closing
 from shapely.geometry import Polygon
@@ -18,6 +20,7 @@ import networkx as nx
 import fiona
 import rasterio
 import rasterio.mask
+from rasterio.plot import show
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Button
 from matplotlib.patches import Rectangle
@@ -150,7 +153,8 @@ class Centerline:
         for r, c in zip(rr, cc):
             window = self.mask[r-1:r+2, c-1:c+2]
 
-            if len(window[window]) > 3:
+            # if len(window[window]) > 3:
+            if np.sum(window) > 3:
                 rows.append(r)
                 cols.append(c)
 
@@ -166,7 +170,8 @@ class Centerline:
         for r, c in zip(rr, cc):
             window = self.mask[r-1:r+2, c-1:c+2]
 
-            if len(window[window]) < 3:
+            # if len(window[window]) < 3:
+            if np.sum(window) < 3:
                 rows.append(r)
                 cols.append(c)
 
@@ -175,7 +180,7 @@ class Centerline:
 
     def remove_small_segments(self, intersections, endpoints, thresh):
         tree = spatial.KDTree(intersections)
-        costs = np.where(self.mask, 1, 1000)
+        costs = np.where(self.mask, 1, 1)
         removed = 0
         for point in endpoints:
             distance, i = tree.query(point)
@@ -197,7 +202,19 @@ class Centerline:
 
         return removed
 
-    def clean_centerline(self, es, thresh=10000):
+    def filter_centerline(self, thresh=5):
+
+        labels = measure.label(centerline.mask)
+        bins = np.bincount(labels.flat)[1:] 
+        filt = np.argwhere(bins >= thresh) + 1
+        for f in filt:
+            labels[np.where(labels == f)] = 9999
+        labels[labels != 9999] = 0
+        labels[labels == 9999] = 1
+
+        self.mask = labels
+
+    def prune_centerline(self, es, thresh=10):
         removed = 999
         endpoints = self.find_all_endpoints()
         # Find the terminal endpoints
@@ -239,20 +256,20 @@ class Centerline:
             ] = 0
 
     def get_idx(self):
-        centerline.idx = np.array(np.where(centerline.mask)).T
+        self.idx = np.array(np.where(self.mask)).T
 
     def get_xy(self):
-        centerline.xy = np.array(rasterio.transform.xy(
-            centerline.transform,
-            centerline.idx[:, 0], 
-            centerline.idx[:, 1], 
+        self.xy = np.array(rasterio.transform.xy(
+            self.transform,
+            self.idx[:, 0], 
+            self.idx[:, 1], 
         )).T
 
     def get_graph(self):
 
         start = 0
-        end = len(self.xy)-1
-        tmp = [tuple(i) for i in self.xy]
+        end = len(self.idx)-1
+        tmp = [tuple(i) for i in self.idx]
 
         G = nx.Graph()
         H = nx.Graph()
@@ -323,9 +340,9 @@ class Centerline:
 
     def manually_clean(self):
         fig, ax = plt.subplots(1, 1)
-        im = ax.imshow(centerline.mask)
+        im = ax.imshow(self.mask)
         t = plt.gca()
-        PD = pickData(t, centerline.mask)
+        PD = pickData(t, self.mask)
     
         axclear = plt.axes([0.0, 0.0, 0.1, 0.1])
         bclear = Button(plt.gca(), 'Clear')
@@ -349,8 +366,9 @@ class Centerline:
 
 
 def fill_holes(mask, thresh=40):
+
     # Find contours
-    contours = measure.find_contours(mask, 0.8)
+    contours = measure.find_contours(mask, 0.5)
     # Display the image and plot all contours found
     polys = []
     for contour in contours:
@@ -362,10 +380,16 @@ def fill_holes(mask, thresh=40):
         if area <= thresh:
             polys.append(poly)
 
-    holes = np.where(rasterio.features.rasterize(
+    holes = np.zeros(mask.shape)
+    holesi = np.where(rasterio.features.rasterize(
         polys, out_shape=mask.shape, all_touched=True
     ))
-    mask[holes[1], holes[0]] = 1
+    holes[holesi[1], holesi[0]] = 1
+    holes = nd.binary_erosion(holes)
+
+    mask = np.copy(holes + mask)
+    mask[mask > 0] = 1
+    mask = nd.binary_closing(mask)
 
     return mask
 
@@ -381,7 +405,8 @@ def get_centerline(mask, smoothing):
     cc = labels == np.argmax(np.bincount(labels.flat)[1:])+1
     filt = ndimage.maximum_filter(cc, size=smoothing)
     # Find skeletonized centerline
-    skeleton = skeletonize(filt, method='lee')
+    # skeleton = skeletonize(filt, method='lee')
+    skeleton = skeletonize(mask, method='lee')
     skeleton = thin(skeleton)
 
     return skeleton 
@@ -445,6 +470,33 @@ def JoinComponents(H, G):
     return H
 
 
+def create_channel_polygon(contours):
+    polygons = []
+    longest = 0
+    # Make polygons and find the longest contour
+    for i, contour in enumerate(contours):
+        polygons.append(Polygon(contour))
+
+    # find which polygons fall within the longest
+    inners = []
+    for i, polygon in enumerate(polygons):
+        # Save the river polygon
+        river_polygon = polygons[longest_i]
+
+        # If the polygon is the river polygon move to the next
+        # if i == longest_i:
+        #     continue
+
+        # See if the polygon is within the river polygons
+        if river_polygon.contains(polygon):
+            inners.append(polygon)
+
+    return Polygon(
+        river_polygon.exterior.coords, 
+        [inner.exterior.coords for inner in inners]
+    )
+
+
 def calculate_width(centerline, image):
     lengths = nx.shortest_path_length(
         centerline.graph, 
@@ -463,7 +515,7 @@ def calculate_width(centerline, image):
     start, end, dist = pairs[np.argmax(pairs[:,2]), :]
     area = len(np.where(image)[0]) * 30 * 30
     # Width in meters
-    return area / dist
+    return area / (dist * 30)
 
 
 def get_largest(mask):
@@ -477,49 +529,132 @@ def get_largest(mask):
     return labels == np.argmax(np.bincount(labels.flat)[1:])+1
 
 
+def get_widths(centerline, image, scale=5):
+    def get_direction(pos, scale=5):
+
+        dy = (pos[1,0] - pos[0,0]) * scale
+        dx = (pos[1,1] - pos[0,1]) * scale
+
+        return dx, dy
+    
+    def get_cross_section_area(dx, dy, pos):
+        # top_left = (pos[0, 0] + dx, pos[0, 1] - dy)
+        # top_right = (pos[0, 0] - dx, pos[0, 1] + dy)
+        # bot_left = (pos[1, 0] + dx, pos[1, 1] - dy)
+        # bot_right = (pos[1 ,0] - dx, pos[1, 1] + dy)
+
+        top_left = (pos[0, 1] - dy, pos[0, 0] + dx)
+        top_right = (pos[0, 1] + dy, pos[0, 0] - dx)
+        bot_left = (pos[1, 1] - dy, pos[1, 0] + dx)
+        bot_right = (pos[1, 1] + dy, pos[1 ,0] - dx)
+
+        corners = np.array([
+            top_left,
+            top_right,
+            bot_right,
+            bot_left,
+        ])
+
+        return Polygon(corners)
+    
+    def get_largest(image):
+        labels = measure.label(image)
+         # assume at least 1 CC
+        assert( labels.max() != 0 )
+        # Find largest connected component
+        bins = np.bincount(labels.flat)[1:] 
+        channel = labels == np.argmax(np.bincount(labels.flat)[1:])+1
+
+        return channel
+
+    allpos = nx.get_node_attributes(centerline.graph, 'pos')
+    widths = np.empty([len(centerline.graph.nodes), 6])
+    for node in centerline.graph.nodes:
+        n1 = [i for i in centerline.graph.neighbors(node)]
+        n = []
+        for n_i in n1:
+            n += [i for i in centerline.graph.neighbors(n_i)]
+
+        if len(n) == 1:
+            pos = [allpos[node]]
+        elif len(n) > 1:
+            pos = []
+        for i in n:
+            pos.append(allpos[i])
+        pos = np.array(pos)
+        length = np.linalg.norm(pos[0,:]-pos[-1,:])
+        pos = np.array([pos[0,:], pos[-1,:]])
+
+        dx, dy = get_direction(pos, scale=scale)
+        poly = get_cross_section_area(dx, dy, pos)
+        if not poly.area:
+            continue
+        area = rasterio.features.rasterize(
+            [poly], 
+            out_shape=image.shape
+        )
+        areai = np.where(area)
+        crop = np.copy(image) + np.copy(area)
+        crop[~(crop == 2)] = 0
+
+        area = get_largest(crop)
+
+        # if node % 100 == 0:
+        #     plt.imshow(image + area)
+        #     plt.scatter(pos[:,1], pos[:,0])
+        #     plt.show()
+
+        width = (np.sum(area)) / length
+
+        widths[node,:] = [
+            node, 
+            allpos[node][0],
+            allpos[node][1],
+            centerline.xy[node,0],
+            centerline.xy[node,1],
+            width
+        ]
+
+    return widths
 
 
 if __name__=='__main__':
 
-    year = '2018'
-    root = '/Users/greenberg/Documents/PHD/Projects/Chapter2/Rivers/Rio_Huallaga/Rio_Huallaga/mask'
-    name = f'Rio_Huallaga_{year}_01-01_12-31_mask.tif'
-    ipath = os.path.join(root, name)
+    years = range(1985, 2022)
+    for year in years:
+        print(year)
+        root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/ML_masks/Torsa1'
+        name = f'Torsa1_{year}_mask.tif'
+        ipath = os.path.join(root, name)
+        try:
+            ds = rasterio.open(ipath)
+        except:
+            continue
 
-    ds = rasterio.open(ipath)
-    mask = ds.read(1)
-    mask = get_largest(mask)
-    image = fill_holes(mask, 600)
+        mask = ds.read(1)
+        # mask = get_largest(mask)
+        image = fill_holes(np.copy(mask), 1000).astype(int)
 
-    centerline = Centerline(
-        get_centerline(image, 5), 
-        ds.crs, 
-        ds.transform
-    )
-    centerline.clean_centerline('NS', 100000)
-    centerline.manually_clean()
-    centerline.get_idx()
-    centerline.get_xy()
-    centerline.get_graph()
-    centerline.graph_sort('NS')
+        centerline = Centerline(
+            get_centerline(image, 5), 
+            ds.crs, 
+            ds.transform
+        )
+        centerline.filter_centerline(5)
+        centerline.prune_centerline('NS', 10)
+        # centerline.manually_clean()
+        centerline.get_idx()
+        centerline.get_xy()
+        centerline.get_graph()
+        # centerline.graph_sort('NS')
 
-    width = calculate_width(centerline, image)
-    centerline.width = width
+        widths = get_widths(centerline, image, scale=2)
+        width = calculate_width(centerline, image)
+        centerline.width = width
+        centerline.point_width = widths
 
-    out_root = '/Users/greenberg/Documents/PHD/Projects/Chapter2/Rivers/Rio_Huallaga/Rio_Huallaga/centerline'
-    out_name = f'Rio_Huallaga_{year}_centerline.pkl'
-    out_path = os.path.join(out_root, out_name)
-    with open(out_path, 'wb') as f:
-        pickle.dump(centerline, f)
-
-#    out_root = '/Users/greenberg/Documents/PHD/Projects/Mobility/MethodsPaper/SensitivityTest/Bermejo/Bermejo/centerlines'
-#    out_name = f'Bermejo_{year}_centerline.csv'
-#    np.savetxt(os.path.join(out_root, out_name), centerline.xy, fmt='%f', delimiter=',', encoding='latin1')
-#
-#    with open(out_path, 'w') as f:
-#        pickle.dump(centerline, f)
-#
-#    out_root = '/Users/greenberg/Documents/PHD/Projects/Mobility/MethodsPaper/SensitivityTest/Bermejo/Bermejo/centerlines'
-#    out_name = f'Bermejo_{year}_centerline.csv'
-#    np.savetxt(os.path.join(out_root, out_name), centerline.xy, fmt='%f', delimiter=',', encoding='latin1')
-#
+        out_root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/centerlines/Torsa1'
+        out_name = f'Torsa1_{year}_centerline.pkl'
+        out_path = os.path.join(out_root, out_name)
+        with open(out_path, 'wb') as f:
+            pickle.dump(centerline, f)
