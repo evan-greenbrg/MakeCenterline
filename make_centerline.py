@@ -570,6 +570,7 @@ def get_widths(centerline, image, scale=5):
     allpos = nx.get_node_attributes(centerline.graph, 'pos')
     widths = np.empty([len(centerline.graph.nodes), 6])
     for node in centerline.graph.nodes:
+        print(node)
         n1 = [i for i in centerline.graph.neighbors(node)]
         n = []
         for n_i in n1:
@@ -599,7 +600,7 @@ def get_widths(centerline, image, scale=5):
 
         area = get_largest(crop)
 
-        # if node % 100 == 0:
+        # if node % 1000 == 0:
         #     plt.imshow(image + area)
         #     plt.scatter(pos[:,1], pos[:,0])
         #     plt.show()
@@ -623,8 +624,10 @@ if __name__=='__main__':
     years = range(1985, 2022)
     for year in years:
         print(year)
-        root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/ML_masks/Torsa1'
-        name = f'Torsa1_{year}_mask.tif'
+        # root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/ML_masks/Torsa1'
+        root = '/Users/greenberg/Documents/PHD/Projects/Mobility/MethodsPaper/RiverData/BraidedRivers/Data/Chindwin/mask'
+        # name = f'Torsa1_{year}_mask.tif'
+        name = f'Chindwin_2019_full_mask_block_0.tif'
         ipath = os.path.join(root, name)
         try:
             ds = rasterio.open(ipath)
@@ -641,20 +644,22 @@ if __name__=='__main__':
             ds.transform
         )
         centerline.filter_centerline(5)
-        centerline.prune_centerline('NS', 10)
+        centerline.prune_centerline('NS', 45)
         # centerline.manually_clean()
         centerline.get_idx()
         centerline.get_xy()
         centerline.get_graph()
         # centerline.graph_sort('NS')
 
-        widths = get_widths(centerline, image, scale=2)
+        widths = get_widths(centerline, image, scale=4)
         width = calculate_width(centerline, image)
         centerline.width = width
         centerline.point_width = widths
 
-        out_root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/centerlines/Torsa1'
-        out_name = f'Torsa1_{year}_centerline.pkl'
+        # out_root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/centerlines/Torsa1'
+        out_root = '/Users/greenberg/Code/Github/MakeCenterline/example'
+        out_name = f'Chindwin_2019_centerline.pkl'
+        # out_name = f'Torsa1_{year}_centerline.pkl'
         out_path = os.path.join(out_root, out_name)
         with open(out_path, 'wb') as f:
             pickle.dump(centerline, f)
