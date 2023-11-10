@@ -9,7 +9,6 @@ import pandas
 import scipy
 from scipy import spatial, ndimage
 from scipy import ndimage as nd
-import skimage
 from skimage import measure, draw, morphology, feature, graph
 from skimage.morphology import medial_axis, skeletonize, thin, binary_closing
 from shapely.geometry import Polygon
@@ -265,21 +264,6 @@ class Centerline:
             self.idx[:, 0], 
             self.idx[:, 1], 
         )).T
-
-    def get_graph_new(self, ds):
-        g, nodes = skimage.graph.pixel_graph(self.mask, connectivity=2)
-        G = nx.from_numpy_array(g)
-
-        ids = np.array(np.where(centerline.mask)).T
-        xy = np.array(ds.xy(ids[:,0], ids[:,1])).T
-        H = nx.Graph()
-        for node in G.nodes:
-            ids
-            H.add_node(node, xy=ids[node,:], pos=xy[node,:])
-        for edge in G.edges:
-            H.add_edge(edge[0], edge[1])
-
-        self.graph = H
 
     def get_graph(self):
 
@@ -583,10 +567,10 @@ def get_widths(centerline, image, scale=5):
 
         return channel
 
-    allpos = nx.get_node_attributes(centerline.graph, 'xy')
+    allpos = nx.get_node_attributes(centerline.graph, 'pos')
     widths = np.empty([len(centerline.graph.nodes), 6])
     for node in centerline.graph.nodes:
-        print(f'{node} of {len(centerline.graph.nodes)}')
+        print(node)
         n1 = [i for i in centerline.graph.neighbors(node)]
         n = []
         for n_i in n1:
@@ -637,64 +621,39 @@ def get_widths(centerline, image, scale=5):
 
 if __name__=='__main__':
 
-    years = range(1985, 2022)
-    years = [1985]
-    for year in years:
-        print(year)
-        root = '/Users/greenberg/Documents/PHD/Projects/BarSlopes/Braided/PlanetImages/Waitaki_psscene_analytic_sr_udm2'
-        # name = f'Torsa1_{year}_mask.tif'
-        name = f'Waitaki_WaterMask.tif'
-        ipath = os.path.join(root, name)
-        try:
-            ds = rasterio.open(ipath)
-        except:
-            continue
-
-        mask = ds.read(1)
-        mask = get_largest(mask)
-        image = fill_holes(np.copy(mask), 200).astype(int)
-
-        # fig,axs = plt.subplots(2,1,sharex=True, sharey=True)
-        # axs[0].imshow(mask)
-        # axs[1].imshow(image)
-        # plt.show()
-
-        centerline = Centerline(
-            get_centerline(image, 5), 
-            ds.crs, 
-            ds.transform
-        )
-        centerline.filter_centerline(5)
-        centerline.prune_centerline('EW', 10)
-
-        centerline.mask = get_largest(centerline.mask)
-
-        # centerline.manually_clean()
-        centerline.get_idx()
-        centerline.get_xy()
-        centerline.get_graph_new(ds)
-        # centerline.graph_sort('NS')
-
-        widths = get_widths(centerline, image, scale=3)
-        # width = calculate_width(centerline, image)
-        centerline.width = width
-        centerline.point_width = widths
-
-        df = pandas.DataFrame(data={
-            'node': widths[:,0],
-            'row': widths[:,1],
-            'col': widths[:,2],
-            'x': widths[:,3],
-            'y': widths[:,4],
-            'point_widths': widths[:,5] * ds.transform[0],
-            # 'average_width': [width for w in widths[:,5]],
-        })
-
-        df.to_csv('Waitakii_2016_centerline.csv')
-
-# out_root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/centerlines/Torsa1' out_root = '/Users/greenberg/Documents/PHD/Projects/BarSlopes/Braided/Niobrara/Niobrara_Area'
-        out_name = f'Niobrara_2015_centerline.pkl'
-        # out_name = f'Torsa1_{year}_centerline.pkl'
-        out_path = os.path.join(out_root, out_name)
-        with open(out_path, 'wb') as f:
-            pickle.dump(centerline, f)
+    # root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/ML_masks/Torsa1'
+    root = '/Users/greenberg/Documents/PHD/Projects/Chapter2/Rivers/Indus/Indus/mask'
+    # name = f'Torsa1_{year}_mask.tif'
+    name = f'Indus_1990_01-01_12-31_mask.tif'
+    ipath = os.path.join(root, name)
+    ds = rasterio.open(ipath)
+    
+    mask = ds.read(1)
+    # mask = get_largest(mask)
+    image = fill_holes(np.copy(mask), 10000).astype(int)
+    
+    centerline = Centerline(
+        get_centerline(image, 5), 
+        ds.crs, 
+        ds.transform
+    )
+    centerline.filter_centerline(5)
+    # centerline.prune_centerline('NS', 5)
+    # centerline.manually_clean()
+    centerline.get_idx()
+    centerline.get_xy()
+    centerline.get_graph()
+    centerline.graph_sort('NS')
+    
+    widths = get_widths(centerline, image, scale=4)
+    width = calculate_width(centerline, image)
+    centerline.width = width
+    centerline.point_width = widths
+    
+    # out_root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/centerlines/Torsa1'
+    out_root = '/Users/greenberg/Code/Github/MakeCenterline/example'
+    out_name = f'Chindwin_2019_centerline.pkl'
+    # out_name = f'Torsa1_{year}_centerline.pkl'
+    out_path = os.path.join(out_root, out_name)
+    with open(out_path, 'wb') as f:
+        pickle.dump(centerline, f)
