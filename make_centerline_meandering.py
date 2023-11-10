@@ -24,6 +24,7 @@ from rasterio.plot import show
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Button
 from matplotlib.patches import Rectangle
+from tqdm import tqdm
 
 
 class pickData(object):
@@ -272,42 +273,33 @@ class Centerline:
         tmp = [tuple(i) for i in self.idx]
 
         G = nx.Graph()
-        H = nx.Graph()
+        # H = nx.Graph()
         for idx, row in enumerate(tmp):
             G.add_node(idx, pos=row)
-            H.add_node(idx, pos=row)
+            # H.add_node(idx, pos=row)
 
         # Add all edges
-        for idx, nodeA in enumerate(tmp):
+        for idx, nodeA in tqdm(enumerate(tmp)):
+            ls = []
             for jdx, nodeB in enumerate(tmp):
                 if idx == jdx:
+                    ls.append(9999999)
                     continue
                 else:
-                    length = np.linalg.norm(np.array(nodeA) - np.array(nodeB))
-                    G.add_edge(idx, jdx, length=length)
-
-        # Reduce number of edges so each node only has two edges
-        for node in G.nodes():
-            # Get all edge lengths 
-            edge_lengths = np.empty((len(G.edges(node)),))
-            edges = np.array(list(G.edges(node)))
-            for idx, edge in enumerate(edges):
-                edge_lengths[idx] = G.get_edge_data(*edge)['length']
-
-            # Only select the two smallest lengths
-            if (node == start) or (node == end):
-                ks = np.argpartition(edge_lengths, 2)[:1]
+                    ls.append(np.linalg.norm(np.array(nodeA) - np.array(nodeB)))
+                    # length = np.linalg.norm(np.array(nodeA) - np.array(nodeB))
+                    # G.add_edge(idx, jdx, length=length)
+            if (idx == start) or (idx == end):
+                ks = np.argsort(ls)[:1]
+                for k in ks:
+                    G.add_edge(idx, k, length=ls[k])
             else:
-                ks = np.argsort(edge_lengths)[:2]
+                ks = np.argsort(ls)[:2]
+                for k in ks:
+                    G.add_edge(idx, k, length=ls[k])
 
-            use_edges = [tuple(i) for i in edges[ks]]
-
-            # Add the filtered edges to the H network
-            for edge in use_edges:
-                length = G.get_edge_data(*edge)['length']
-                H.add_edge(*edge, length=length)
-
-        self.graph = JoinComponents(H, G)
+        print('Joining')
+        self.graph = JoinComponents(G)
 
     def graph_sort(self, es):
 
@@ -412,11 +404,13 @@ def get_centerline(mask, smoothing):
     return skeleton 
 
 
-def JoinComponents(H, G):
-    G.remove_edges_from(list(G.edges))
+def JoinComponents(H):
+    G = copy.deepcopy(H)
+    G.remove_edges_from(list(H.edges))
     # Get number of components
     S = [H.subgraph(c).copy() for c in nx.connected_components(H)]
     while len(S) != 1:
+        print(len(S))
         # Get node positions
         node_attributes = nx.get_node_attributes(H, 'pos')
 
@@ -529,7 +523,7 @@ def get_largest(mask):
     return labels == np.argmax(np.bincount(labels.flat)[1:])+1
 
 
-def get_widths(centerline, image, scale=5):
+def get_widths(centerline, image, scale=5, every=10):
     def get_direction(pos, scale=5):
 
         dy = (pos[1,0] - pos[0,0]) * scale
@@ -568,9 +562,13 @@ def get_widths(centerline, image, scale=5):
         return channel
 
     allpos = nx.get_node_attributes(centerline.graph, 'pos')
-    widths = np.empty([len(centerline.graph.nodes), 6])
-    for node in centerline.graph.nodes:
+    # widths = np.empty([len(centerline.graph.nodes), 6])
+    widths = []
+    for step, node in enumerate(centerline.graph.nodes):
+        if step % every != 0:
+            continue
         print(node)
+
         n1 = [i for i in centerline.graph.neighbors(node)]
         n = []
         for n_i in n1:
@@ -607,24 +605,33 @@ def get_widths(centerline, image, scale=5):
 
         width = (np.sum(area)) / length
 
-        widths[node,:] = [
+        # widths[node,:] = [
+        #     node, 
+        #     allpos[node][0],
+        #     allpos[node][1],
+        #     centerline.xy[node,0],
+        #     centerline.xy[node,1],
+        #     width
+        # ]
+        widths.append([
             node, 
-            allpos[node][0],
-            allpos[node][1],
-            centerline.xy[node,0],
-            centerline.xy[node,1],
+            allpos[step][0],
+            allpos[step][1],
+            centerline.xy[step,0],
+            centerline.xy[step,1],
             width
-        ]
+        ])
 
-    return widths
+
+    return np.array(widths)
 
 
 if __name__=='__main__':
 
     # root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/ML_masks/Torsa1'
-    root = '/Users/greenberg/Documents/PHD/Projects/Chapter2/Rivers/Indus/Indus/mask'
+    root = '/home/greenberg/ExtraSpace/PhD/Projects/Dams/Widths/Snake'
     # name = f'Torsa1_{year}_mask.tif'
-    name = f'Indus_1990_01-01_12-31_mask.tif'
+    name = f'Snake_Mask_2021_32611.tif'
     ipath = os.path.join(root, name)
     ds = rasterio.open(ipath)
     
@@ -643,16 +650,16 @@ if __name__=='__main__':
     centerline.get_idx()
     centerline.get_xy()
     centerline.get_graph()
-    centerline.graph_sort('NS')
+    centerline.graph_sort('EW')
     
-    widths = get_widths(centerline, image, scale=4)
+    widths = get_widths(centerline, image, scale=4, every=5)
     width = calculate_width(centerline, image)
     centerline.width = width
     centerline.point_width = widths
     
     # out_root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/centerlines/Torsa1'
-    out_root = '/Users/greenberg/Code/Github/MakeCenterline/example'
-    out_name = f'Chindwin_2019_centerline.pkl'
+    out_root = '/home/greenberg/ExtraSpace/PhD/Projects/Dams/Widths/Snake'
+    out_name = f'Snake_2021_centerline.pkl'
     # out_name = f'Torsa1_{year}_centerline.pkl'
     out_path = os.path.join(out_root, out_name)
     with open(out_path, 'wb') as f:
