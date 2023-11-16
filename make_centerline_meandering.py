@@ -523,7 +523,7 @@ def get_largest(mask):
     return labels == np.argmax(np.bincount(labels.flat)[1:])+1
 
 
-def get_widths(centerline, image, scale=5, every=10):
+def get_widths(centerline, image, scale=5, every=3):
     def get_direction(pos, scale=5):
 
         dy = (pos[1,0] - pos[0,0]) * scale
@@ -562,8 +562,8 @@ def get_widths(centerline, image, scale=5, every=10):
         return channel
 
     allpos = nx.get_node_attributes(centerline.graph, 'pos')
-    # widths = np.empty([len(centerline.graph.nodes), 6])
-    widths = []
+
+    widths = np.ones([len(centerline.graph.nodes), 6]) * 9999
     for step, node in enumerate(centerline.graph.nodes):
         if step % every != 0:
             continue
@@ -592,6 +592,7 @@ def get_widths(centerline, image, scale=5, every=10):
             [poly], 
             out_shape=image.shape
         )
+
         areai = np.where(area)
         crop = np.copy(image) + np.copy(area)
         crop[~(crop == 2)] = 0
@@ -605,33 +606,26 @@ def get_widths(centerline, image, scale=5, every=10):
 
         width = (np.sum(area)) / length
 
-        # widths[node,:] = [
-        #     node, 
-        #     allpos[node][0],
-        #     allpos[node][1],
-        #     centerline.xy[node,0],
-        #     centerline.xy[node,1],
-        #     width
-        # ]
-        widths.append([
+        # widths.append([
+        widths[node,:] = [
             node, 
-            allpos[step][0],
-            allpos[step][1],
-            centerline.xy[step,0],
-            centerline.xy[step,1],
+            allpos[node][0],
+            allpos[node][1],
+            centerline.xy[node,0],
+            centerline.xy[node,1],
             width
-        ])
+        ]
 
-
-    return np.array(widths)
+    where = np.unique(np.argwhere(widths[:,0] != 9999))
+    return widths[where,:]
 
 
 if __name__=='__main__':
 
     # root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/ML_masks/Torsa1'
-    root = '/home/greenberg/ExtraSpace/PhD/Projects/Dams/Widths/Snake'
+    root = '/Volumes/Greenberg/Dams/Width/Flint'
     # name = f'Torsa1_{year}_mask.tif'
-    name = f'Snake_Mask_2021_32611.tif'
+    name = f'Flint_Upstream_2021_01-01_12-31_mask.tif'
     ipath = os.path.join(root, name)
     ds = rasterio.open(ipath)
     
@@ -650,17 +644,53 @@ if __name__=='__main__':
     centerline.get_idx()
     centerline.get_xy()
     centerline.get_graph()
-    centerline.graph_sort('EW')
+    centerline.graph_sort('NS')
     
-    widths = get_widths(centerline, image, scale=4, every=5)
+    widths = get_widths(centerline, image, scale=5, every=2)
     width = calculate_width(centerline, image)
     centerline.width = width
     centerline.point_width = widths
-    
+
     # out_root = '/home/greenberg/ExtraSpace/PhD/Projects/ComparativeMobility/Rivers/TorsaDownstream/centerlines/Torsa1'
-    out_root = '/home/greenberg/ExtraSpace/PhD/Projects/Dams/Widths/Snake'
-    out_name = f'Snake_2021_centerline.pkl'
+    out_root = '/Volumes/Greenberg/Dams/Width/Flint'
+    out_name = f'Flint_Upstream_2021_centerline.pkl'
     # out_name = f'Torsa1_{year}_centerline.pkl'
     out_path = os.path.join(out_root, out_name)
     with open(out_path, 'wb') as f:
         pickle.dump(centerline, f)
+
+    df = pandas.DataFrame(
+        data=centerline.point_width, 
+        columns=['Node', 'row', 'col', 'x', 'y', 'width_px']
+    )
+    df['width_m'] = df['width_px'] * 30
+    df['width_m_sm'] = nd.uniform_filter(
+        df['width_m'],
+        size=10
+    )
+
+
+    dists = []
+    for i, row in df.iterrows():
+        if not i:
+            dist = 0
+        else:
+            dist += np.linalg.norm(
+                df.iloc[i][['x', 'y']]
+                - df.iloc[i-1][['x', 'y']]
+            )
+        dists.append(dist)
+    df['dist_km'] = [d / 1000 for d in dists]
+
+    transformer = pyproj.Transformer.from_crs(
+        centerline.crs, "EPSG:4326"
+    )
+    lat, lon = transformer.transform(df['x'], df['y'])
+    df['lat'] = lat
+    df['lon'] = lon
+
+    out_name = f'Flint_Upstream_2021_centerline.csv'
+    out_path = os.path.join(out_root, out_name)
+    df.to_csv(out_path)
+
+
